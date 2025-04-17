@@ -1,0 +1,12 @@
+
+__pycache__
+*.log
+*egg-info
+.idea
+config/
+test/
+experiments/
+data/
+output/
+misc/
+scripts/
