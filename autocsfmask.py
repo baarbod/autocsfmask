@@ -43,11 +43,13 @@ def main():
     # args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
     # args.method = 'simple'
     
-    # args.func = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/stcfsl/run03_breath_stc.nii.gz'
-    # args.sbref = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/sbref/run03_breath_SBRef.nii.gz'
-    # args.aseg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
-    # args.reg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/registration/reg03toref.dat'
-    # args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
+    args.func = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/stcfsl/run03_breath_stc.nii.gz'
+    args.sbref = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/sbref/run03_breath_SBRef.nii.gz'
+    args.aseg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
+    args.reg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/registration/reg03toref.dat'
+    args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
+    args.method = 'hybrid'
+    # args.method = 'optim_all'
     # args.method = 'simple'
     
     # args.func = '/om2/group/lewislab/aging/ag154/ses-01-day/mri/stcfsl/run03_breath_stc.nii.gz'
@@ -55,7 +57,7 @@ def main():
     # args.aseg = '/om2/group/lewislab/aging/ag154/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
     # args.reg = '/om2/group/lewislab/aging/ag154/ses-01-day/mri/registration/reg03toref.dat'
     # args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
-    # args.method = 'simple'
+    # args.method = 'hybrid'
     
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
@@ -201,16 +203,13 @@ def main():
     print("Computing deattenuation matrix...")
     
     da = compute_deattenuation_matrix(sproc)
-    num_upper = (da.shape[1] * (da.shape[2]-1))/2 # exlcuding diagonal
-    score = []
-    for itime in range(da.shape[0]):
-        score.append((np.triu(da) > 0)[itime].sum() / num_upper)
-    score = np.array(score)
-    
-    # da_sum = np.expand_dims((np.triu(da) < 0).sum(), axis=0)
-    
+    num_upper = (da.shape[1] * (da.shape[2] - 1)) / 2
+    upper_mask = np.triu(np.ones((da.shape[1], da.shape[2]), dtype=bool), k=1)
+    scores = (da[:, upper_mask] > 0).sum(axis=1) / num_upper
+    score = np.expand_dims(scores.sum()/scores.size, axis=0)
+        
     output_path = os.path.join(args.outdir, 'score.txt')
-    np.savetxt(output_path, np.expand_dims(score.sum()/score.size, axis=0))
+    np.savetxt(output_path, score)
     
     # Create a heatmap using the 'RdBu' colormap
     fig, ax = plt.subplots()
@@ -437,18 +436,9 @@ def get_mask(metrics, weights, thres=0.5):
 
 
 def compute_deattenuation_matrix(s):
-    
-    ntime = s.shape[0]
-    nslice = s.shape[1]
-    da = np.zeros((ntime, nslice, nslice))
-    for itime in range(ntime):
-        
-        sslices = s[itime, :]
-        for i in range(nslice):
-            for j in range(nslice):
-                da[itime, i, j] = sslices[i] - sslices[j]
-    
-    return da
+    # s: shape (ntime, nslice)
+    # Result: da of shape (ntime, nslice, nslice), where da[t, i, j] = s[t, i] - s[t, j]
+    return s[:, :, np.newaxis] - s[:, np.newaxis, :]
 
 
 def get_signal(func_data_window, mask):
@@ -574,14 +564,34 @@ def get_mask_optim_thres(metrics, weights):
 def get_mask_hybrid(metrics, func_data_window):
     # APPROACH 3 - hybrid ======================================
     from scipy.optimize import minimize
-    from itertools import combinations
 
-    def dice_score(mask1, mask2):
-        intersection = np.sum(mask1 & mask2)
-        return 2 * intersection / (np.sum(mask1) + np.sum(mask2))
+    def compute_masked_correlation(mask, func_data_window):
+
+        nslice = func_data_window.shape[2]
+        slicewise_corrs = []
+
+        for z in range(nslice):
+            mask_slice = mask[:, :, z]
+            data_slice = func_data_window[:, :, z, :]  # shape: (x, y, time)
+            masked_voxels = data_slice[mask_slice > 0]
+            
+            if masked_voxels.shape[0] < 2:
+                continue  # Skip slices with <2 voxels in mask
+
+            normed = (masked_voxels - masked_voxels.mean(axis=1, keepdims=True)) / masked_voxels.std(axis=1, keepdims=True)
+            corr_matrix = np.corrcoef(normed)
+
+            i, j = np.triu_indices_from(corr_matrix, k=1)
+            slicewise_corrs.append(corr_matrix[i, j].mean())
+            
+        # penalty = masked_voxels.shape[0] / np.prod(mask.shape)  # fraction of volume included
+        # Average across slices (if any were valid)
+        return np.mean(slicewise_corrs) if slicewise_corrs else 0
+
 
     def weight_constraint(params):
         return np.sum(params[:4]) - 1
+
 
     # Approach 1: Optimize weights with fixed threshold
     def objective(params):
@@ -597,7 +607,6 @@ def get_mask_hybrid(metrics, func_data_window):
         
     def hybrid_optimization(metrics, max_iter=5):
 
-        final_dcs = []
         for iter in range(max_iter):
             print(f"ITER = {iter}")
             
@@ -610,6 +619,8 @@ def get_mask_hybrid(metrics, func_data_window):
                 
                 if iter > 1:
                     initial_guess[-1] = thres
+                elif iter == 1:
+                    initial_guess[-1] = 0.5
                 
                 result = minimize(objective, initial_guess, method='SLSQP',
                                 constraints={'type': 'eq', 'fun': weight_constraint},
@@ -624,41 +635,35 @@ def get_mask_hybrid(metrics, func_data_window):
             print("Optimal Weights:", optimal_weights)
             print("Optimal Threshold:", optimal_thres)
             print("Minimum da_sum:", result.fun)
-            mask_1 = get_mask(metrics, optimal_weights, thres=optimal_thres)
             
             # define thresholds around optimal
-            thresholds = np.linspace(0.8*optimal_thres, 1.2*optimal_thres, 10)
+            # thresholds = np.linspace(0.8*optimal_thres, 1.2*optimal_thres, 20)
+            thresholds = np.linspace(0, 1.0, 20)
             thresholds[thresholds > 1.0] = 1.0
             thresholds[thresholds < 0.0] = 0.0
             
-            print(f"thres between {0.8*optimal_thres} and {1.2*optimal_thres}") 
+            # print(f"thres between {0.8*optimal_thres} and {1.2*optimal_thres}") 
             
             # Approach 2: Optimize threshold with fixed weights
-            dcsums = []
+            scores = []
             for threshold in thresholds:
-                # Normalize and threshold mask each array
-                masked_metrics = [(metric > threshold).astype(int) for metric in metrics]
-                masked_metrics.append(get_mask(metrics, optimal_weights, thres=threshold))
-
-                # Compute pairwise Dice scores
-                num_metrics = len(masked_metrics)
-                dice_matrix = np.zeros((num_metrics, num_metrics))
+                # Get the combined mask at this threshold
+                mask = get_mask(metrics, optimal_weights, thres=threshold)
                 
-                for i, j in combinations(range(len(metrics)), 2):
-                    dice_matrix[i, j] = dice_matrix[j, i] = dice_score(masked_metrics[i], masked_metrics[j])
-                dcsums.append(dice_matrix.sum())
-                print(f"dcsum = {dice_matrix.sum()}")
+                # Compute the score based on functional correlation
+                score = compute_masked_correlation(mask, func_data_window)
+                
+                scores.append(score)
+                print(f"Threshold {threshold:.2f} → Score = {score:.4f}")
+                
+            plt.plot(thresholds, scores)
+            plt.show()
             
-            
-            best_ind = np.argmax(dcsums)
-            thres = thresholds[best_ind]  # Update threshold
+            best_idx = np.argmax(scores)
+            thres = thresholds[best_idx]
+            print(f"Best threshold: {thres}, Score: {scores[best_idx]}")
             mask_2 = get_mask(metrics, optimal_weights, thres=thres)
-            
-            # compute mask dice score
-            final_mask_dice = dice_score(mask_1, mask_2)
-            final_dcs.append(final_mask_dice)
         
-        print(f"final_dcs = {final_dcs}")
         return mask_2
 
     mask = hybrid_optimization(metrics)
