@@ -9,6 +9,7 @@ from scipy.stats import skew
 from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass
 import matplotlib.patches as patches
+from scipy.optimize import differential_evolution
 
 
 def main():
@@ -19,7 +20,7 @@ def main():
     parser.add_argument('--aseg', type=str, help='path to freesurfer aseg')
     parser.add_argument('--reg', type=str, help='path to registration matrix)')
     parser.add_argument('--outdir', default='', type=str, help='path to output directory')
-    parser.add_argument('--span', default=5, type=int, help='length of window')
+    parser.add_argument('--span', default=4, type=int, help='length of window')
     parser.add_argument('--nslice', default=5, type=int, help='number of slices in window')
     parser.add_argument('--w_amp', default=0.25, type=float, help='weight of amplitude metric')
     parser.add_argument('--w_sk', default=0.25, type=float, help='weight of skew metric')
@@ -43,14 +44,14 @@ def main():
     # args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
     # args.method = 'simple'
     
-    args.func = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/stcfsl/run03_breath_stc.nii.gz'
-    args.sbref = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/sbref/run03_breath_SBRef.nii.gz'
-    args.aseg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
-    args.reg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/registration/reg03toref.dat'
-    args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
-    args.method = 'hybrid'
-    # args.method = 'optim_all'
-    # args.method = 'simple'
+    # args.func = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/stcfsl/run03_breath_stc.nii.gz'
+    # args.sbref = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/sbref/run03_breath_SBRef.nii.gz'
+    # args.aseg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
+    # args.reg = '/om2/group/lewislab/aging/ag152/ses-01-day/mri/registration/reg03toref.dat'
+    # args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
+    # args.method = 'hybrid'
+    # # args.method = 'optim_all'
+    # # args.method = 'simple'
     
     # args.func = '/om2/group/lewislab/aging/ag154/ses-01-day/mri/stcfsl/run03_breath_stc.nii.gz'
     # args.sbref = '/om2/group/lewislab/aging/ag154/ses-01-day/mri/sbref/run03_breath_SBRef.nii.gz'
@@ -59,6 +60,22 @@ def main():
     # args.outdir = '/om/user/bashen/repositories/autocsfmask/output/test'
     # args.method = 'hybrid'
     
+    # args.func = '/om2/group/lewislab/aging/ag118/ses-01-day/mri/func/run03_checker.nii.gz'
+    # args.sbref = '/om2/group/lewislab/aging/ag118/ses-01-day/mri/sbref/run03_checker_SBRef.nii.gz'
+    # args.aseg = '/om2/group/lewislab/aging/ag118/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
+    # args.reg = '/om2/group/lewislab/aging/ag118/ses-01-day/mri/registration/reg03toref.dat'
+    # args.outdir = '/om/user/bashen/repositories/autocsfmask/test_output'
+    # args.method = 'simple'
+
+    # args.func = '/om2/group/lewislab/aging/ag106/ses-01-day/mri/func/run01_checker.nii.gz'
+    # args.sbref = '/om2/group/lewislab/aging/ag106/ses-01-day/mri/sbref/run01_checker_SBRef.nii.gz'
+    # args.aseg = '/om2/group/lewislab/aging/ag106/ses-01-day/mri/fs_recon_biascorr/mri/aseg.mgz'
+    # args.reg = '/om2/group/lewislab/aging/ag106/ses-01-day/mri/registration/reg01toref.dat'
+    # args.outdir = '/om/user/bashen/repositories/autocsfmask/test_output'
+    # # args.method = 'optim_all'
+    # args.method = 'hybrid'
+
+
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
 
@@ -135,8 +152,6 @@ def main():
         mask = get_mask_simple(metrics, weights, args.thres)
     elif args.method == 'optim_all':
         mask = get_mask_optim_all(metrics, func_data_window)
-    elif args.method == 'optim_thres':
-        mask = get_mask_optim_thres(metrics, weights)
     elif args.method == 'hybrid':
         mask = get_mask_hybrid(metrics, func_data_window)    
     
@@ -188,9 +203,12 @@ def main():
     
     sraw = np.array(s)
     sproc = scale_epi(s)
-    fig_signal, [ax1, ax2] = plt.subplots(nrows=2, ncols=1)
-    ax1.plot(sraw)
-    ax2.plot(sproc)
+
+    fig_signal, axes = plt.subplots(nrows=2, ncols=2)
+    axes[0, 0].plot(sraw)
+    axes[0, 1].plot(smooth_timeseries(sraw))
+    axes[1, 0].plot(sproc)
+    axes[1, 1].plot(smooth_timeseries(sproc))
     plt.tight_layout()
     plt.show()
     
@@ -203,6 +221,10 @@ def main():
     print("Computing deattenuation matrix...")
     
     da = compute_deattenuation_matrix(sproc)
+    
+    # keep only first 3 slices
+    da = da[:, :3, :3]
+    
     num_upper = (da.shape[1] * (da.shape[2] - 1)) / 2
     upper_mask = np.triu(np.ones((da.shape[1], da.shape[2]), dtype=bool), k=1)
     scores = (da[:, upper_mask] > 0).sum(axis=1) / num_upper
@@ -226,12 +248,6 @@ def main():
     output_path = os.path.join(args.outdir, 'csf_mask.nii.gz')
     nib.save(new_img, output_path)
     
-    # # plot each mask slice
-    # fig, axes = plt.subplots(nrows=1, ncols=5)
-    # for i, ax in enumerate(axes):
-    #     ax.imshow(pred_full_mask[:, :, i])
-    # plt.show()
-    
     print("Segmentation complete. All outputs saved to:", args.outdir)
     
     
@@ -242,6 +258,11 @@ def load_data(func_path, sbref_path, aseg_path, reg_path):
     aseg_nifti = nib.load(aseg_path)
     func_data = func_nifti.get_fdata()
     sbref_data = sbref_nifti.get_fdata()
+    
+    # sometimes phase image is put in the 4th dimension
+    if sbref_data.ndim > 3:
+        sbref_data = sbref_data[:, :, :, 0]
+    
     aseg_data = aseg_nifti.get_fdata()
     
     regmat = np.loadtxt(reg_path, skiprows=4, max_rows=4) 
@@ -429,8 +450,14 @@ def get_mask(metrics, weights, thres=0.5):
         min_val, max_val = np.min(slice_data), np.max(slice_data)
         mean_metric[:, :, i] = (slice_data - min_val) / (max_val - min_val) if max_val > min_val else 0
     
-    # Apply threshold and generate binary mask
-    mask = (mean_metric > thres).astype(np.uint8)
+    # threshold can be sequence to apply to each slice
+    if np.isscalar(thres):
+        mask = (mean_metric > thres).astype(np.uint8)
+    else:
+        thres = np.array(thres).reshape(1, 1, -1)  # For broadcasting over slices
+        if thres.shape[2] != mean_metric.shape[2]:
+            raise ValueError(f"Length of threshold vector ({thres.shape[2]}) must match number of slices ({mean_metric.shape[2]})")
+        mask = (mean_metric > thres).astype(np.uint8)
     
     return mask
 
@@ -450,121 +477,89 @@ def get_signal(func_data_window, mask):
 
 
 def get_mask_simple(metrics, weights, thres):
-    # APPROACH 0 ===============================================
-
-    assert np.sum(weights) == 1.0, 'Warning: Weights must sum to 1.0'
+    # simple approach just threshold weighed average using weight
     
-    # define mask based on metrics and weights
+    assert np.sum(weights) == 1.0, 'Warning: Weights must sum to 1.0'
     mask = get_mask(metrics, weights, thres=thres)
     
     return mask
-    # ==========================================================
+
+
+def softmax(x):
+    e_x = np.exp(x - np.max(x))  # for numerical stability
+    return e_x / e_x.sum()
+
+
+def objective_da_sum(params, metrics, func_data_window):
+    # Split weights and threshold from params
+    raw_weights  = params[:4]
+    weights = softmax(raw_weights)
+    thres = params[4]
+    
+    # Compute the mask based on metrics and threshold
+    mask = get_mask(metrics, weights, thres=thres)
+    
+    # Compute da_sum
+    s = get_signal(func_data_window, mask)
+    sproc = scale_epi(s)
+    sproc = smooth_timeseries(sproc, window_size=5)
+    da = compute_deattenuation_matrix(sproc)
+    da_sum = np.float64((np.triu(da) < 0).sum())
+    
+    return da_sum  # We want to minimize this
 
 
 def get_mask_optim_all(metrics, func_data_window):    
-    # APPROACH 1 - vary everything =============================
+    # find weights and threshold using global optimization
 
-    from scipy.optimize import minimize
+    bounds = [(-5, 5)] * 4 + [(0.01, 1)]
 
-    def objective(params):
-        # Split weights and threshold from params
-        weights = params[:4]
-        thres = params[4]
-        
-        # Ensure weights sum to 1 (although SLSQP will enforce this)
-        weights = weights / np.sum(weights)
-        
-        # Compute the mask based on metrics and threshold
-        mask = get_mask(metrics, weights, thres=thres)
-        
-        # Compute da_sum
-        s = get_signal(func_data_window, mask)
-        sproc = scale_epi(s)
-        da = compute_deattenuation_matrix(sproc)
-        da_sum = np.float64((np.triu(da) < 0).sum())
-        
-        return da_sum  # We want to minimize this
-
-    # Constraint: sum of weights must be 1
-    def weight_constraint(params):
-        return np.sum(params[:4]) - 1
-
-    # Bounds: weights between 0 and 1, thres in a reasonable range
-    bounds = [(0, 1)] * 4 + [(0.01, 1)]  # Assuming 0.01 ≤ thres ≤ 1
-
+    n_iter = 10
     results = []
-    local_mins = []
-    for _ in range(10):
-        initial_guess = [np.random.rand(), np.random.rand(), np.random.rand(), np.random.rand(), np.random.rand()]
-        
-        # Optimization
-        result = minimize(objective, initial_guess, method='SLSQP',
-                        constraints={'type': 'eq', 'fun': weight_constraint},
-                        bounds=bounds)
-
-        # Optimal weights and threshold
-        optimal_weights = result.x[:4]
-        optimal_thres = result.x[4]
-
-        print("Optimal Weights:", optimal_weights)
-        print("Optimal Threshold:", optimal_thres)
-        print("Minimum da_sum:", result.fun)
+    
+    weights_list = []
+    thres_list = []
+    
+    for i in range(n_iter):
+        result = differential_evolution(objective_da_sum, 
+                                        bounds,
+                                        args=(metrics, func_data_window), 
+                                        strategy='best1bin', maxiter=100, polish=True)
+        raw_weights = result.x[:4]
+        weights = softmax(raw_weights)
+        thres = result.x[4]
+        weights_list.append(weights)
+        thres_list.append(thres)
         results.append(result)
-        local_mins.append(result.fun)
-        
-    best_ind = np.argmin(local_mins)
-    optimal_weights = results[best_ind].x[:4]
-    optimal_thres = results[best_ind].x[4]
-    
-    mask = get_mask(metrics, optimal_weights, thres=optimal_thres)
+        print(f"Run {i+1}/{n_iter}:")
+        print(f"  Weights     = {weights}")
+        print(f"  Threshold   = {thres:.4f}")
+        print(f"  da_sum      = {result.fun:.2f}")
+
+    avg_weights = softmax(np.mean(weights_list, axis=0))
+    avg_thres = np.mean(thres_list)
+
+    print("\nAveraged Parameters:")
+    print(f"  Weights   = {avg_weights}")
+    print(f"  Threshold = {avg_thres:.4f}")
+
+    # re-evaluate da_sum using averaged parameters
+    mask = get_mask(metrics, avg_weights, thres=avg_thres)
+    s = get_signal(func_data_window, mask)
+    sproc = scale_epi(s)
+    sproc = smooth_timeseries(sproc, window_size=5)
+    da = compute_deattenuation_matrix(sproc)
+    da_sum = np.float64((np.triu(da) < 0).sum())
+
+    print(f"Final da_sum (from averaged parameters): {da_sum:.2f}")
+
     return mask
-    # ==========================================================
-
-
-def get_mask_optim_thres(metrics, weights):
-    # APPROACH 2 - vary threshold ==============================
-    
-    from itertools import combinations
-    
-    assert np.sum(weights) == 1.0, 'Warning: Weights must sum to 1.0'
-    
-    def dice_score(mask1, mask2):
-        """Compute the Dice similarity coefficient between two binary masks."""
-        intersection = np.sum(mask1 & mask2)
-        return 2 * intersection / (np.sum(mask1) + np.sum(mask2))
-    
-    thresholds = np.arange(0.1, 1, 0.1)
-    dcsums = []
-    for threshold in thresholds:
-
-        # Normalize and threshold mask each array
-        masked_metrics = [(metric > threshold).astype(int) for metric in metrics]
-        masked_metrics.append(get_mask(metrics, weights, thres=threshold))
-
-        # Compute pairwise Dice scores
-        num_metrics = len(masked_metrics)
-        dice_matrix = np.zeros((num_metrics, num_metrics))
-
-        # Fill the upper triangle of the matrix with pairwise Dice scores
-        for i, j in combinations(range(num_metrics), 2):
-            dice_matrix[i, j] = dice_matrix[j, i] = dice_score(masked_metrics[i], masked_metrics[j])
-
-        # Print the result
-        print(dice_matrix)
-        dcsums.append(dice_matrix.sum())
-    
-    # define mask based on metrics and weights
-    best_ind = np.argmax(dcsums)
-    optimal_thres = thresholds[best_ind]
-    mask = get_mask(metrics, weights, thres=optimal_thres)
-    return mask
-    # ==========================================================
 
 
 def get_mask_hybrid(metrics, func_data_window):
-    # APPROACH 3 - hybrid ======================================
-    from scipy.optimize import minimize
+    # optimize weights, then sweep to get best threshold
 
+    # quantify the correlation across mask voxels, penalizing smaller masks
     def compute_masked_correlation(mask, func_data_window):
 
         nslice = func_data_window.shape[2]
@@ -582,95 +577,101 @@ def get_mask_hybrid(metrics, func_data_window):
             corr_matrix = np.corrcoef(normed)
 
             i, j = np.triu_indices_from(corr_matrix, k=1)
-            slicewise_corrs.append(corr_matrix[i, j].mean())
+            
+            # smaller masks scale the value down
+            slice_penalty = 0.1 * masked_voxels.shape[0] / np.prod(mask.shape[:2])
+            
+            slicewise_corrs.append(corr_matrix[i, j].mean() * slice_penalty)
             
         # penalty = masked_voxels.shape[0] / np.prod(mask.shape)  # fraction of volume included
         # Average across slices (if any were valid)
         return np.mean(slicewise_corrs) if slicewise_corrs else 0
 
 
-    def weight_constraint(params):
-        return np.sum(params[:4]) - 1
-
-
-    # Approach 1: Optimize weights with fixed threshold
-    def objective(params):
-        weights = params[:4]
-        thres = params[4]
-        weights = weights / np.sum(weights)
-        mask = get_mask(metrics, weights, thres=thres)
-        s = get_signal(func_data_window, mask)
-        sproc = scale_epi(s)
-        da = compute_deattenuation_matrix(sproc)
-        da_sum = np.float64((np.triu(da) < 0).sum())
-        return da_sum  # We want to minimize this
-        
-    def hybrid_optimization(metrics, max_iter=5):
-
-        for iter in range(max_iter):
-            print(f"ITER = {iter}")
-            
-            bounds = [(0, 1)] * 4 + [(0.01, 1)]  # Assuming 0.01 ≤ thres ≤ 1
-            results = []
-            local_mins = []
-
-            for _ in range(5):
-                initial_guess = np.random.rand(5)
-                
-                if iter > 1:
-                    initial_guess[-1] = thres
-                elif iter == 1:
-                    initial_guess[-1] = 0.5
-                
-                result = minimize(objective, initial_guess, method='SLSQP',
-                                constraints={'type': 'eq', 'fun': weight_constraint},
-                                bounds=bounds)
-                results.append(result)
-                local_mins.append(result.fun)
-                
-            # Optimal weights and threshold
-            best_ind = np.argmin(local_mins)
-            optimal_weights = results[best_ind].x[:4]
-            optimal_thres = results[best_ind].x[4]
-            print("Optimal Weights:", optimal_weights)
-            print("Optimal Threshold:", optimal_thres)
-            print("Minimum da_sum:", result.fun)
-            
-            # define thresholds around optimal
-            # thresholds = np.linspace(0.8*optimal_thres, 1.2*optimal_thres, 20)
-            thresholds = np.linspace(0, 1.0, 20)
-            thresholds[thresholds > 1.0] = 1.0
-            thresholds[thresholds < 0.0] = 0.0
-            
-            # print(f"thres between {0.8*optimal_thres} and {1.2*optimal_thres}") 
-            
-            # Approach 2: Optimize threshold with fixed weights
-            scores = []
-            for threshold in thresholds:
-                # Get the combined mask at this threshold
-                mask = get_mask(metrics, optimal_weights, thres=threshold)
-                
-                # Compute the score based on functional correlation
-                score = compute_masked_correlation(mask, func_data_window)
-                
-                scores.append(score)
-                print(f"Threshold {threshold:.2f} → Score = {score:.4f}")
-                
-            plt.plot(thresholds, scores)
-            plt.show()
-            
-            best_idx = np.argmax(scores)
-            thres = thresholds[best_idx]
-            print(f"Best threshold: {thres}, Score: {scores[best_idx]}")
-            mask_2 = get_mask(metrics, optimal_weights, thres=thres)
-        
-        return mask_2
-
-    mask = hybrid_optimization(metrics)
-    return mask
-# ==========================================================
-
+    max_iter=10
+    weight_list = []
+    thres_list = []
     
+    for iter in range(max_iter):
+        print(f"ITER = {iter}")
+
+        # perform global optimization
+        bounds = [(-5, 5)] * 4 + [(0.01, 1)]
+        result = differential_evolution(objective_da_sum, 
+                            bounds,
+                            args=(metrics, func_data_window), 
+                            strategy='best1bin', maxiter=100, polish=True)
+
+        raw_weights = result.x[:4]
+        optimal_weights = softmax(raw_weights)
+        optimal_thres = result.x[4]
+        weight_list.append(optimal_weights)
+                    
+        print("Optimal Weights:", optimal_weights)
+        print("Optimal Threshold:", optimal_thres)
+        print("Minimum da_sum:", result.fun)
+        
+        # define thresholds around globably optimized threshold
+        thresholds = np.linspace(0.8*optimal_thres, 1.2*optimal_thres, 20)
+        thresholds = thresholds[thresholds <= 1.0]  # Remove values > 1
+        thresholds = thresholds[thresholds >= 0.0]  # Optional, in case future tweaks go < 0
+        print(f"thres between {0.8*optimal_thres} and {1.2*optimal_thres}") 
+        
+        # optimize threshold with fixed weights
+        scores = []
+        for threshold in thresholds:
+            mask = get_mask(metrics, optimal_weights, thres=threshold)
+            score = compute_masked_correlation(mask, func_data_window)
+            scores.append(score)
+            print(f"Threshold {threshold:.2f} → Score = {score:.4f}")
+            
+        # get threshold with best correlation score
+        best_idx = np.argmax(scores)
+        thres = thresholds[best_idx]
+        thres_list.append(thres)
+        print(f"Best threshold: {thres}, Score: {scores[best_idx]}")
+    
+    # average weights, and choose threshold after all iterations
+    avg_weights = softmax(np.mean(weight_list, axis=0))
+    avg_thres = np.median(thres_list)
+
+    print("Final Weights:", avg_weights)
+    print("Final Threshold:", avg_thres)
+    final_mask = get_mask(metrics, avg_weights, thres=avg_thres)
+    score = compute_masked_correlation(final_mask, func_data_window)
+    print(f"Final Score: {score}")
+
+    return final_mask
+
+
+def smooth_timeseries(data, window_size=5):
+        """
+        Smooths a time series or multiple time series using a moving average.
+
+        Parameters:
+            data (np.ndarray): 1D array (T,) or 2D array (T, N) where T is time and N is number of series.
+            window_size (int): Size of the moving average window.
+
+        Returns:
+            np.ndarray: Smoothed array of the same shape as input.
+        """
+        if window_size < 1:
+            raise ValueError("window_size must be at least 1")
+
+        data = np.asarray(data)
+        if data.ndim == 1:
+            padded = np.pad(data, (window_size//2, window_size-1-window_size//2), mode='edge')
+            return np.convolve(padded, np.ones(window_size)/window_size, mode='valid')
+        elif data.ndim == 2:
+            smoothed = np.empty_like(data, dtype=np.float64)
+            for i in range(data.shape[1]):
+                padded = np.pad(data[:, i], (window_size//2, window_size-1-window_size//2), mode='edge')
+                smoothed[:, i] = np.convolve(padded, np.ones(window_size)/window_size, mode='valid')
+            return smoothed
+        else:
+            raise ValueError("Input must be a 1D or 2D array")
+        
+
 def scale_epi(s, startind=0, remove_offset=True):
     
     def mean_pct_portion(x, pct, fromtop=False):
@@ -686,7 +687,7 @@ def scale_epi(s, startind=0, remove_offset=True):
     # input csf after loading from file
     s = s[startind:, :]
     if remove_offset:
-        s -= mean_pct_portion(s, 5)
+        s -= mean_pct_portion(s, 15)
     slice1_maximum = mean_pct_portion(s[:, [0]], 5, fromtop=True)
     s /= slice1_maximum
     return s
