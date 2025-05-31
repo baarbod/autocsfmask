@@ -5,12 +5,13 @@ from scipy.stats import skew
 from scipy.optimize import curve_fit
 
 
-def normalize_slicewise(arr):
-    arr_min = arr.min(axis=(0, 1), keepdims=True)
-    arr_max = arr.max(axis=(0, 1), keepdims=True)
-    denom = arr_max - arr_min
+def normalize_slicewise(arr, lower_percentile=5, upper_percentile=95):
+    p_low = np.percentile(arr, lower_percentile, axis=(0, 1), keepdims=True)
+    p_high = np.percentile(arr, upper_percentile, axis=(0, 1), keepdims=True)
+    denom = p_high - p_low
     denom[denom == 0] = 1.0  # Avoid divide by zero
-    return (arr - arr_min) / denom
+    arr_clipped = np.clip(arr, p_low, p_high)
+    return (arr_clipped - p_low) / denom
 
 
 def compute_amp(func_data_window):
