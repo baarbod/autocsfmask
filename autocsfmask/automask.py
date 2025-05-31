@@ -5,12 +5,8 @@ import os
 import nibabel as nib
 import matplotlib.pyplot as plt
 import argparse
-from scipy.stats import skew
-from scipy.optimize import curve_fit
 from scipy.ndimage import center_of_mass
 import matplotlib.patches as patches
-from scipy.optimize import differential_evolution
-
 import autocsfmask.utils as utils
 import autocsfmask.metrics as metrics
 import autocsfmask.masking as masking
@@ -24,7 +20,7 @@ def main():
     parser.add_argument('--aseg', type=str, help='path to freesurfer aseg')
     parser.add_argument('--reg', type=str, help='path to registration matrix)')
     parser.add_argument('--outdir', default='', type=str, help='path to output directory')
-    parser.add_argument('--span', default=4, type=int, help='length of window')
+    parser.add_argument('--span', default=5, type=int, help='length of window')
     parser.add_argument('--nslice', default=5, type=int, help='number of slices in window')
     parser.add_argument('--w_amp', default=0.25, type=float, help='weight of amplitude metric')
     parser.add_argument('--w_sk', default=0.25, type=float, help='weight of skew metric')
@@ -40,141 +36,63 @@ def main():
 
     print("Loading data...")
     func_data, sbref_data, aseg_data, regmat, func_affine, func_header = load_data(args.func, args.sbref, args.aseg, args.reg)
-    print(f"Functional data shape: {func_data.shape}")
-    print(f"SBRef shape: {sbref_data.shape}")
-    print(f"Aseg shape: {aseg_data.shape}")
-    print("Registration Matrix (regmat):")
-    print(np.array2string(regmat, formatter={'float_kind':lambda x: f"{x:7.4f}"}))
+
     print("Extracting windowed data...")
     func_data_window, sbref_data_window, window_coords, aseg_windows, centroids =  \
         window_data(func_data, sbref_data, aseg_data, regmat, args.span, args.nslice)
-    print(f"Windowed data shape: {func_data_window.shape}")
     
     print("Plotting windowed data...")
-    fig_windows, axes = plt.subplots(nrows=args.nslice, ncols=3, figsize=(4.5, args.nslice * 1.5))
-    lower_ind = np.array(window_coords).min(axis=0)
-    upper_ind = np.array(window_coords).max(axis=0)
-    xmin = lower_ind[0] - int(0.5*args.span)
-    xmax = upper_ind[1] + int(0.5*args.span)
-    ymin = lower_ind[2] - int(0.5*args.span) 
-    ymax = upper_ind[3] + int(0.5*args.span)
-    for islice in range(args.nslice):
-        (fc_y, fc_x), (ac_y, ac_x) = centroids[islice]
-        axes[islice, 0].imshow(aseg_windows[islice], cmap='gray')
-        axes[islice, 0].scatter(ac_y, ac_x, color='red')
-        axes[islice, 1].imshow(sbref_data_window[:, :, islice], cmap='gray')
-        axes[islice, 1].scatter(fc_y, fc_x, color='red')
-        cx = np.array(window_coords)[islice, :2].mean() - xmin
-        cy = np.array(window_coords)[islice, 2:4].mean() - ymin
-        axes[islice, 2].imshow(sbref_data[xmin:xmax, ymin:ymax, islice])
-        axes[islice, 2].scatter(cy, cx, color='red')
-        rect = patches.Rectangle((cy-args.span, cx-args.span), 2*args.span, 2*args.span, linewidth=0.5, edgecolor='red', facecolor='none')
-        axes[islice, 2].add_patch(rect)
-        for j in range(3):
-            axes[islice, j].set_axis_off()
-    column_titles = ['Aseg centered', 'SBRef centered', 'SBRef de-centered']
-    for col, title in enumerate(column_titles):
-        axes[0][col].set_title(title, fontsize=10)
-    plt.tight_layout()
-    plt.show()
-    output_path = os.path.join(args.outdir, 'anat_and_func_windows.png')
-    fig_windows.savefig(output_path, format='png')
+    fig_windows, _ = plot_windows(args.nslice, args.span, window_coords, centroids, aseg_windows, sbref_data_window, sbref_data)
+    fig_windows.savefig(os.path.join(args.outdir, 'anat_and_func_windows.png'), format='png')
 
     print("Computing metrics...")
-    tmax_norm = metrics.compute_amp(func_data_window)
-    sk_norm = metrics.compute_skew(func_data_window)
-    dr_norm = metrics.compute_decay(func_data_window)
-    sbref_norm = metrics.compute_sbref(sbref_data_window)
+    metrics_list = [metrics.compute_amp(func_data_window),
+                    metrics.compute_skew(func_data_window),
+                    metrics.compute_decay(func_data_window),
+                    metrics.compute_sbref(sbref_data_window)]
+    
     print("Generating mask using method:", args.method)
-    metrics = [tmax_norm, sk_norm, dr_norm, sbref_norm]
-    weights = [args.w_amp, args.w_sk, args.w_dr, args.w_sbref]
     if args.method == 'simple':
-        mask = masking.get_mask_simple(metrics, weights, args.thres)
-    elif args.method == 'optim_all':
-        mask = masking.get_mask_optim_all(metrics, func_data_window)
+        weights = [args.w_amp, args.w_sk, args.w_dr, args.w_sbref]
+        mask = masking.get_mask_simple(metrics_list, weights, args.thres)
     elif args.method == 'hybrid':
-        mask = masking.get_mask_hybrid(metrics, func_data_window)    
+        mask, weights = masking.get_mask_hybrid(metrics_list, func_data_window)    
     
     print("Plotting metrics and saving to:", args.outdir)
-    row_titles = ['Amp', 'Skew', 'Decay', 'SBRef', 'Mean', 'Mask']
-    fig_metric, axes = plt.subplots(nrows=len(row_titles), ncols=args.nslice, figsize=(6, 7))
-    def plot_metric_on_row(metric, axes, row=0):
-        for islice, ax in enumerate(axes[row, :]):
-            ax.imshow(metric[:, :, islice])
-            ax.set_axis_off()
-        fig_metric.text(0.5, 1.0 - (row - 0.05) / len(row_titles), row_titles[row], ha='center', va='top', fontsize=14)
-    weights = np.array(weights, dtype=float).reshape(-1, 1, 1, 1)  # Reshape for broadcasting
-    stacked_arrays = np.stack(metrics, axis=0)
-    mean_metric_unnorm = np.sum(stacked_arrays * weights, axis=0)
-    mean_metric = np.zeros_like(mean_metric_unnorm, dtype=float)
-    for i in range(mean_metric.shape[2]):  # Loop over slices
-        slice_data = mean_metric_unnorm[:, :, i]
-        min_val, max_val = np.min(slice_data), np.max(slice_data)
-        mean_metric[:, :, i] = (slice_data - min_val) / (max_val - min_val) if max_val > min_val else 0
-    plot_metric_on_row(tmax_norm, axes, row=0)
-    plot_metric_on_row(sk_norm, axes, row=1)
-    plot_metric_on_row(dr_norm, axes, row=2)
-    plot_metric_on_row(sbref_norm, axes, row=3)
-    plot_metric_on_row(mean_metric, axes, row=4)
-    plot_metric_on_row(mask, axes, row=5)
-    plt.tight_layout()
-    plt.subplots_adjust(hspace=0.3, wspace=0.05)
-    plt.show()
-    output_path = os.path.join(args.outdir, 'voxels.png')
-    fig_metric.savefig(output_path, format='png')
+    fig_metric, _ = plot_metrics(args.nslice, metrics_list, weights, mask)
+    fig_metric.savefig(os.path.join(args.outdir, 'voxels.png'), format='png')
 
-    print("Extracting signal from mask...")
-    s = np.zeros((func_data_window.shape[-1], args.nslice))
-    for islice in range(args.nslice):    
-        slice_mask = mask[:, :, islice].astype(bool)
-        slice_data = func_data_window[:, :, islice, :][slice_mask, :]
-        mean_ts = slice_data.mean(axis=0)
-        s[:, islice] = mean_ts
-    sraw = np.array(s)
-    sproc = utils.scale_epi(s)
-    fig_signal, axes = plt.subplots(nrows=2, ncols=2)
-    axes[0, 0].plot(sraw)
-    axes[0, 1].plot(utils.smooth_timeseries(sraw))
-    axes[1, 0].plot(sproc)
-    axes[1, 1].plot(utils.smooth_timeseries(sproc))
-    plt.tight_layout()
-    plt.show()
-    output_path = os.path.join(args.outdir, 'signal.txt')
-    np.savetxt(output_path, sraw)
-    output_path = os.path.join(args.outdir, 'signal.png')
-    fig_signal.savefig(output_path, format='png')
+    print("Extracting and plotting signal from mask...")
+    s = utils.get_signal(func_data_window, mask)
+    fig_signal, _ = plot_signal(s)
+    np.savetxt(os.path.join(args.outdir, 'signal.txt'), s)
+    fig_signal.savefig(os.path.join(args.outdir, 'signal.png'), format='png')
     
     print("Computing decay-based metric...")
-    da = utils.compute_deattenuation_matrix(sproc)
+    da = utils.compute_deattenuation_matrix(utils.scale_epi(s))
     da = da[:, :3, :3] # keep only first 3 slices
     num_upper = (da.shape[1] * (da.shape[2] - 1)) / 2
     upper_mask = np.triu(np.ones((da.shape[1], da.shape[2]), dtype=bool), k=1)
     scores = (da[:, upper_mask] > 0).sum(axis=1) / num_upper
     score = np.expand_dims(scores.sum()/scores.size, axis=0)
-    output_path = os.path.join(args.outdir, 'score.txt')
-    np.savetxt(output_path, score)
-    fig, ax = plt.subplots()
-    ax.imshow(da.mean(axis=0), cmap='RdBu')
-    plt.show()
-    output_path = os.path.join(args.outdir, 'diff_map.png')
-    fig.savefig(output_path, format='png')
+    np.savetxt(os.path.join(args.outdir, 'score.txt'), score)
     
     print("Computing correlation-based metric...")
-    corr_score = masking.compute_masked_correlation(mask, func_data_window, penalty_scale=0)
-    output_path = os.path.join(args.outdir, 'score_corr.txt')
-    np.savetxt(output_path, np.expand_dims(corr_score, axis=0))
+    corr_score = masking.compute_masked_correlation(mask, func_data_window, use_penalty=False)
+    np.savetxt(os.path.join(args.outdir, 'score_corr.txt'), np.expand_dims(corr_score, axis=0))
     
-    pred_full_mask = map_window_to_full(mask, window_coords, full_shape=func_data.shape[:3])
-    Z = pred_full_mask.shape[2]
-    pred_full_mask = pred_full_mask * np.arange(1, Z + 1)[np.newaxis, np.newaxis, :]
-    new_img = nib.Nifti1Image(pred_full_mask, func_affine, header=func_header)
-    output_path = os.path.join(args.outdir, 'csf_mask.nii.gz')
-    nib.save(new_img, output_path)
+    print("Generating full mask...")
+    full_mask = map_window_to_full(mask, window_coords, full_shape=func_data.shape[:3])
+    full_mask *= np.arange(1, full_mask.shape[2] + 1)[np.newaxis, np.newaxis, :]
+    nib.save(nib.Nifti1Image(full_mask, func_affine, header=func_header), os.path.join(args.outdir, 'csf_mask.nii.gz'))
     
     print("Segmentation complete. All outputs saved to:", args.outdir)
     
-    
+
 def load_data(func_path, sbref_path, aseg_path, reg_path):
+    for path in [func_path, sbref_path, aseg_path, reg_path]:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Input file not found: {path}")
     func_nifti = nib.load(func_path)
     sbref_nifti = nib.load(sbref_path)
     aseg_nifti = nib.load(aseg_path)
@@ -192,23 +110,17 @@ def load_data(func_path, sbref_path, aseg_path, reg_path):
 def window_data(func_data, sbref_data, aseg_data, regmat, span, nslice):
     aseg_data = aseg_data.copy()
     aseg_data[aseg_data != 15] = 0
-    anatVOX2RAS = np.array([
-        [-1.0, 0,    0,  0.5 * aseg_data.shape[0]],
-        [0,    0,    1.0, -0.5 * aseg_data.shape[2]],
-        [0,   -1.0,  0,  0.5 * aseg_data.shape[1]],
-        [0,    0,    0,  1]
-    ])
-    funcVOX2RAS = np.array([
-        [-2.5, 0,    0,  1.25 * func_data.shape[0]],
-        [0,    0,    2.5, -1.25 * func_data.shape[2]],
-        [0,   -2.5,  0,  1.25 * func_data.shape[1]],
-        [0,    0,    0,  1]
-    ])
+    anatVOX2RAS = np.array([[-1, 0, 0, 0.5 * aseg_data.shape[0]],
+                         [0, 0, 1, -0.5 * aseg_data.shape[2]],
+                         [0, -1, 0, 0.5 * aseg_data.shape[1]],
+                         [0, 0, 0, 1]])
+    funcVOX2RAS = np.array([[-2.5, 0, 0, 1.25 * func_data.shape[0]],
+                         [0, 0, 2.5, -1.25 * func_data.shape[2]],
+                         [0, -2.5, 0, 1.25 * func_data.shape[1]],
+                         [0, 0, 0, 1]])
     func_data_window = np.zeros((2*span, 2*span, nslice, func_data.shape[-1]))
     sbref_data_window = np.zeros((2*span, 2*span, nslice))
-    aseg_windows = []
-    centroids = []
-    window_coords = []
+    aseg_windows, centroids, window_coords = [], [], []
     # find initial func coordinates using aseg 3D centroid
     centroid_3d = center_of_mass(aseg_data)
     centroid_3d_anatCRS = np.array([*centroid_3d, 1], ndmin=2)
@@ -260,6 +172,73 @@ def window_data(func_data, sbref_data, aseg_data, regmat, span, nslice):
         fc_y = centroid_y_func - y_start
         centroids.append(((fc_y, fc_x), (ac_y, ac_x)))  # func, aseg
     return func_data_window, sbref_data_window, window_coords, aseg_windows, centroids
+
+
+def plot_windows(nslice, span, window_coords, centroids, aseg_windows, sbref_data_window, sbref_data):
+    fig_windows, axes = plt.subplots(nrows=nslice, ncols=3, figsize=(4.5, nslice * 1.5))
+    lower_ind = np.array(window_coords).min(axis=0)
+    upper_ind = np.array(window_coords).max(axis=0)
+    xmin = lower_ind[0] - int(0.5*span)
+    xmax = upper_ind[1] + int(0.5*span)
+    ymin = lower_ind[2] - int(0.5*span) 
+    ymax = upper_ind[3] + int(0.5*span)
+    for islice in range(nslice):
+        (fc_y, fc_x), (ac_y, ac_x) = centroids[islice]
+        axes[islice, 0].imshow(aseg_windows[islice], cmap='gray')
+        axes[islice, 0].scatter(ac_y, ac_x, color='red')
+        axes[islice, 1].imshow(sbref_data_window[:, :, islice], cmap='gray')
+        axes[islice, 1].scatter(fc_y, fc_x, color='red')
+        cx = np.array(window_coords)[islice, :2].mean() - xmin
+        cy = np.array(window_coords)[islice, 2:4].mean() - ymin
+        axes[islice, 2].imshow(sbref_data[xmin:xmax, ymin:ymax, islice])
+        axes[islice, 2].scatter(cy, cx, color='red')
+        rect = patches.Rectangle((cy-span, cx-span), 2*span, 2*span, linewidth=0.5, edgecolor='red', facecolor='none')
+        axes[islice, 2].add_patch(rect)
+        for j in range(3):
+            axes[islice, j].set_axis_off()
+    column_titles = ['Aseg centered', 'SBRef centered', 'SBRef de-centered']
+    for col, title in enumerate(column_titles):
+        axes[0][col].set_title(title, fontsize=10)
+    plt.tight_layout()
+    return fig_windows, axes
+    
+
+def plot_metrics(nslice, metrics_list, weights, mask):
+    row_titles = ['Amp', 'Skew', 'Decay', 'SBRef', 'Mean', 'Mask']
+    fig_metric, axes = plt.subplots(nrows=len(row_titles), ncols=nslice, figsize=(6, 7))
+    def plot_metric_on_row(metric, axes, row=0):
+        for islice, ax in enumerate(axes[row, :]):
+            ax.imshow(metric[:, :, islice])
+            ax.set_axis_off()
+        fig_metric.text(0.5, 1.0 - (row - 0.05) / len(row_titles), row_titles[row], ha='center', va='top', fontsize=14)
+    weights = np.array(weights, dtype=float).reshape(-1, 1, 1, 1)  # Reshape for broadcasting
+    stacked_arrays = np.stack(metrics_list, axis=0)
+    mean_metric_unnorm = np.sum(stacked_arrays * weights, axis=0)
+    mean_metric = np.zeros_like(mean_metric_unnorm, dtype=float)
+    for i in range(mean_metric.shape[2]):  # Loop over slices
+        slice_data = mean_metric_unnorm[:, :, i]
+        min_val, max_val = np.min(slice_data), np.max(slice_data)
+        mean_metric[:, :, i] = (slice_data - min_val) / (max_val - min_val) if max_val > min_val else 0
+    plot_metric_on_row(metrics_list[0], axes, row=0)
+    plot_metric_on_row(metrics_list[1], axes, row=1)
+    plot_metric_on_row(metrics_list[2], axes, row=2)
+    plot_metric_on_row(metrics_list[3], axes, row=3)
+    plot_metric_on_row(mean_metric, axes, row=4)
+    plot_metric_on_row(mask, axes, row=5)
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.3, wspace=0.05)
+    return fig_metric, axes
+
+
+def plot_signal(s):
+    sproc = utils.scale_epi(s)
+    fig_signal, axes = plt.subplots(nrows=2, ncols=2)
+    axes[0, 0].plot(s[:, :4])
+    axes[0, 1].plot(utils.smooth_timeseries(s)[:, :4])
+    axes[1, 0].plot(sproc[:, :4])
+    axes[1, 1].plot(utils.smooth_timeseries(sproc)[:, :4])
+    plt.tight_layout()
+    return fig_signal, axes
 
 
 def map_window_to_full(window_mask, window_coords, full_shape):
