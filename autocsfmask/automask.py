@@ -79,13 +79,13 @@ def main():
     scores = {"correlation_score": 1 - masking.objective_corr(params, metrics_list, func_data_window),
               "decay_validity_score": 1 - masking.objective_da_sum(params, metrics_list, func_data_window),
               "interslice_dice_score": 1 - masking.objective_dice(params, metrics_list, func_data_window)}
-    with open("evaluation_scores.json", "w") as f:
+    with open(os.path.join(args.outdir, "evaluation_scores.json"), "w") as f:
         json.dump(scores, f, indent=4)
     
     if args.method == 'optim':
         print('Saving optimal parameters...')
         optimization_results = {"weights": weights.tolist(), "thresholds": thres.tolist()}
-        with open("optimal_params.json", "w") as f:
+        with open(os.path.join(args.outdir, "optimal_params.json"), "w") as f:
             json.dump(optimization_results, f, indent=4)
     
     print("Generating full output mask...")
