@@ -2,6 +2,7 @@
 
 import numpy as np
 import os
+import json
 import nibabel as nib
 import matplotlib.pyplot as plt
 import argparse
@@ -33,6 +34,9 @@ def main():
 
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
+    figdir = os.path.join(args.outdir, 'diagnostic_images')
+    if not os.path.exists(figdir):
+        os.makedirs(figdir)
 
     print("Loading data...")
     func_data, sbref_data, aseg_data, regmat, func_affine, func_header = load_data(args.func, args.sbref, args.aseg, args.reg)
@@ -43,48 +47,51 @@ def main():
     
     print("Plotting windowed data...")
     fig_windows, _ = plot_windows(args.nslice, args.span, window_coords, centroids, aseg_windows, sbref_data_window, sbref_data)
-    fig_windows.savefig(os.path.join(args.outdir, 'anat_and_func_windows.png'), format='png')
+    fig_windows.savefig(os.path.join(figdir, 'windows.png'), format='png')
 
     print("Computing metrics...")
-    metrics_list = [metrics.compute_amp(func_data_window),
+    metrics_list = [metrics.compute_mean(func_data_window),
+                    metrics.compute_std(func_data_window),
                     metrics.compute_skew(func_data_window),
-                    metrics.compute_decay(func_data_window),
                     metrics.compute_sbref(sbref_data_window)]
     
     print("Generating mask using method:", args.method)
     if args.method == 'simple':
         weights = [args.w_amp, args.w_sk, args.w_dr, args.w_sbref]
         mask = masking.get_mask_simple(metrics_list, weights, args.thres)
-    elif args.method == 'hybrid':
-        mask, weights = masking.get_mask_hybrid(metrics_list, func_data_window)    
-    
+    elif args.method == 'optim':
+        mask, weights, thres = masking.get_mask_optim(metrics_list, func_data_window)   
+    else:
+        raise ValueError(f"Unknown method: {args.method}. Expected 'simple' or 'optim'.")
+
     print("Plotting metrics and saving to:", args.outdir)
     fig_metric, _ = plot_metrics(args.nslice, metrics_list, weights, mask)
-    fig_metric.savefig(os.path.join(args.outdir, 'voxels.png'), format='png')
+    fig_metric.savefig(os.path.join(figdir, 'voxels.png'), format='png')
 
     print("Extracting and plotting signal from mask...")
     s = utils.get_signal(func_data_window, mask)
     fig_signal, _ = plot_signal(s)
     np.savetxt(os.path.join(args.outdir, 'signal.txt'), s)
-    fig_signal.savefig(os.path.join(args.outdir, 'signal.png'), format='png')
+    fig_signal.savefig(os.path.join(figdir, 'signal.png'), format='png')
     
-    print("Computing decay-based metric...")
-    da = utils.compute_deattenuation_matrix(utils.scale_epi(s))
-    da = da[:, :3, :3] # keep only first 3 slices
-    num_upper = (da.shape[1] * (da.shape[2] - 1)) / 2
-    upper_mask = np.triu(np.ones((da.shape[1], da.shape[2]), dtype=bool), k=1)
-    scores = (da[:, upper_mask] > 0).sum(axis=1) / num_upper
-    score = np.expand_dims(scores.sum()/scores.size, axis=0)
-    np.savetxt(os.path.join(args.outdir, 'score.txt'), score)
+    print('Computing evaluation metrics...')
+    params = np.hstack((weights, thres))
+    scores = {"correlation_score": 1 - masking.objective_corr(params, metrics_list, func_data_window),
+              "decay_validity_score": 1 - masking.objective_da_sum(params, metrics_list, func_data_window),
+              "interslice_dice_score": 1 - masking.objective_dice(params, metrics_list, func_data_window)}
+    with open("evaluation_scores.json", "w") as f:
+        json.dump(scores, f, indent=4)
     
-    print("Computing correlation-based metric...")
-    corr_score = masking.compute_masked_correlation(mask, func_data_window, use_penalty=False)
-    np.savetxt(os.path.join(args.outdir, 'score_corr.txt'), np.expand_dims(corr_score, axis=0))
+    if args.method == 'optim':
+        print('Saving optimal parameters...')
+        optimization_results = {"weights": weights.tolist(), "thresholds": thres.tolist()}
+        with open("optimal_params.json", "w") as f:
+            json.dump(optimization_results, f, indent=4)
     
-    print("Generating full mask...")
+    print("Generating full output mask...")
     full_mask = map_window_to_full(mask, window_coords, full_shape=func_data.shape[:3])
-    full_mask *= np.arange(1, full_mask.shape[2] + 1)[np.newaxis, np.newaxis, :]
-    nib.save(nib.Nifti1Image(full_mask, func_affine, header=func_header), os.path.join(args.outdir, 'csf_mask.nii.gz'))
+    full_mask = full_mask * np.arange(1, full_mask.shape[2] + 1)[np.newaxis, np.newaxis, :]
+    nib.save(nib.Nifti1Image(full_mask, func_affine, header=func_header), os.path.join(args.outdir, 'mask.nii.gz'))
     
     print("Segmentation complete. All outputs saved to:", args.outdir)
     
@@ -204,7 +211,7 @@ def plot_windows(nslice, span, window_coords, centroids, aseg_windows, sbref_dat
     
 
 def plot_metrics(nslice, metrics_list, weights, mask):
-    row_titles = ['Amp', 'Skew', 'Decay', 'SBRef', 'Mean', 'Mask']
+    row_titles = ['Mean', 'SD', 'Skew', 'SBRef', 'Mean', 'Mask']
     fig_metric, axes = plt.subplots(nrows=len(row_titles), ncols=nslice, figsize=(6, 7))
     def plot_metric_on_row(metric, axes, row=0):
         for islice, ax in enumerate(axes[row, :]):
@@ -231,12 +238,9 @@ def plot_metrics(nslice, metrics_list, weights, mask):
 
 
 def plot_signal(s):
-    sproc = utils.scale_epi(s)
-    fig_signal, axes = plt.subplots(nrows=2, ncols=2)
-    axes[0, 0].plot(s[:, :4])
-    axes[0, 1].plot(utils.smooth_timeseries(s)[:, :4])
-    axes[1, 0].plot(sproc[:, :4])
-    axes[1, 1].plot(utils.smooth_timeseries(sproc)[:, :4])
+    fig_signal, axes = plt.subplots(nrows=1, ncols=2, figsize=(6, 3))
+    axes[0].plot(s)
+    axes[1].plot(utils.scale_epi(s))
     plt.tight_layout()
     return fig_signal, axes
 
