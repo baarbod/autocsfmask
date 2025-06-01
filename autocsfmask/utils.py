@@ -8,6 +8,15 @@ def softmax(x):
     return e_x / e_x.sum()
 
 
+def dice_score(mask1, mask2):
+    intersection = np.logical_and(mask1, mask2).sum()
+    size1 = mask1.sum()
+    size2 = mask2.sum()
+    if size1 + size2 == 0:
+        return 1.0  # Treat two empty masks as perfectly overlapping
+    return 2.0 * intersection / (size1 + size2)
+
+
 def smooth_timeseries(data, window_size=5):
         """
         Smooths a time series or multiple time series using a moving average.
