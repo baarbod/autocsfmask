@@ -5,7 +5,7 @@ from scipy.stats import skew
 from scipy.optimize import curve_fit
 
 
-def normalize_slicewise(arr, lower_percentile=5, upper_percentile=95):
+def normalize_slicewise(arr, lower_percentile=2, upper_percentile=98):
     p_low = np.percentile(arr, lower_percentile, axis=(0, 1), keepdims=True)
     p_high = np.percentile(arr, upper_percentile, axis=(0, 1), keepdims=True)
     denom = p_high - p_low
@@ -14,9 +14,12 @@ def normalize_slicewise(arr, lower_percentile=5, upper_percentile=95):
     return (arr_clipped - p_low) / denom
 
 
-def compute_amp(func_data_window):
-    tmax = np.max(func_data_window, axis=-1) / np.min(func_data_window, axis=-1)
-    return normalize_slicewise(tmax)
+def compute_std(func_data_window):
+    return normalize_slicewise(func_data_window.std(axis=-1))
+
+
+def compute_mean(func_data_window):
+    return normalize_slicewise(func_data_window.mean(axis=-1))
 
 
 def compute_skew(func_data_window):
@@ -42,7 +45,6 @@ def compute_decay(func_data_window):
                 popt, _ =  curve_fit(exp_decay, slice_indices, signal_scaled)
                 DR[i, j, islice] = popt[0]
     dr_norm = normalize_slicewise(DR)
-    dr_norm[dr_norm < 0] = 0.0
     return dr_norm
 
 
