@@ -75,7 +75,7 @@ def objective_da_sum(params, metrics_list, func_data_window):
     return 1 - score
 
 
-def objective_dice(params, metrics_list, func_data_window, size_penalty_weight=1.0):
+def objective_dice(params, metrics_list, func_data_window, size_penalty_weight=1.2):
     n_metrics = len(metrics_list)
     weights = ensure_sum_to_one(params[:n_metrics])
     thres = params[n_metrics:]
@@ -97,12 +97,12 @@ def objective_mixed(params, metrics_list, func_data_window):
     return np.mean([corr_cost, da_cost, dice_cost])
 
     
-def get_mask_optim(metrics, func_data_window):
+def get_mask_optim(metrics, func_data_window, objective_func=objective_mixed):
     nslice = func_data_window.shape[2]
     n_metrics = len(metrics)
     thres_bounds = [(0.2, 0.8)] * nslice
     bounds = [(-5, 5)] * n_metrics + thres_bounds 
-    result = differential_evolution(objective_mixed, bounds,
+    result = differential_evolution(objective_func, bounds,
                         args=(metrics, func_data_window), 
                         strategy='best1bin', maxiter=100, 
                         polish=True, disp=True)
