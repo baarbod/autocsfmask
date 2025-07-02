@@ -84,7 +84,7 @@ def get_mask(metrics, weights, thres=0.5):
         min_val, max_val = np.min(slice_data), np.max(slice_data)
         mean_metric[:, :, i] = (slice_data - min_val) / (max_val - min_val) if max_val > min_val else 0
     # threshold can be sequence to apply to each slice
-    if np.isscalar(thres):
+    if np.isscalar(thres) or len(thres) == 1:
         mask = (mean_metric > thres).astype(np.uint8)
     else:
         thres = np.array(thres).reshape(1, 1, -1)  # For broadcasting over slices
