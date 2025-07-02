@@ -23,10 +23,8 @@ def main():
     parser.add_argument('--outdir', default='', type=str, help='path to output directory')
     parser.add_argument('--span', default=5, type=int, help='length of window')
     parser.add_argument('--nslice', default=5, type=int, help='number of slices in window')
-    parser.add_argument('--w_amp', default=0.25, type=float, help='weight of amplitude metric')
-    parser.add_argument('--w_sk', default=0.25, type=float, help='weight of skew metric')
-    parser.add_argument('--w_dr', default=0.25, type=float, help='weight of decay rate metric')
-    parser.add_argument('--w_sbref', default=0.25, type=float, help='weight of sbref metric')
+    parser.add_argument('--metrics', default=['amp', 'skew', 'decay', 'sbref'], nargs='+', type=str, help='metrics to use')
+    parser.add_argument('--weights', default=4*[0.25], nargs='+', type=float, help='metric weights, only for method = simple')
     parser.add_argument('--thres', default=0.50, type=float, help='threshold for mask definition')
     parser.add_argument('--method', default='simple', type=str, help='algorithm to use')
     
@@ -49,23 +47,30 @@ def main():
     fig_windows, _ = plot_windows(args.nslice, args.span, window_coords, centroids, aseg_windows, sbref_data_window, sbref_data)
     fig_windows.savefig(os.path.join(figdir, 'windows.png'), format='png')
 
-    print("Computing metrics...")
-    metrics_list = [metrics.compute_mean(func_data_window),
-                    metrics.compute_std(func_data_window),
-                    metrics.compute_skew(func_data_window),
-                    metrics.compute_sbref(sbref_data_window)]
+    print("Computing metrics...")    
+    metrics_list = []
+    weights = []
+    for m, w in zip(args.metrics, args.weights):
+        if m == 'amp':
+            metrics_list.append(metrics.compute_std(func_data_window))
+        elif m == 'skew':
+            metrics_list.append(metrics.compute_skew(func_data_window))
+        elif m == 'decay':
+            metrics_list.append(metrics.compute_decay(func_data_window))
+        elif m == 'sbref':
+            metrics_list.append(metrics.compute_sbref(sbref_data_window))
+        weights.append(w)
     
     print("Generating mask using method:", args.method)
     if args.method == 'simple':
-        weights = [args.w_amp, args.w_sk, args.w_dr, args.w_sbref]
         mask = masking.get_mask_simple(metrics_list, weights, args.thres)
     elif args.method == 'optim':
-        mask, weights, thres = masking.get_mask_optim(metrics_list, func_data_window)   
+        mask, weights, thres = masking.get_mask_optim(metrics_list, func_data_window)         
     else:
         raise ValueError(f"Unknown method: {args.method}. Expected 'simple' or 'optim'.")
 
     print("Plotting metrics and saving to:", args.outdir)
-    fig_metric, _ = plot_metrics(args.nslice, metrics_list, weights, mask)
+    fig_metric, _ = plot_metrics(args.nslice, metrics_list, weights, mask, metric_row_titles=args.metrics)
     fig_metric.savefig(os.path.join(figdir, 'voxels.png'), format='png')
 
     print("Extracting and plotting signal from mask...")
@@ -75,14 +80,17 @@ def main():
     fig_signal.savefig(os.path.join(figdir, 'signal.png'), format='png')
     
     print('Computing evaluation metrics...')
-    params = np.hstack((weights, thres))
+    if args.method == 'simple':
+        params = np.hstack((weights, args.thres))
+    else:
+        params = np.hstack((weights, thres))
     scores = {"correlation_score": 1 - masking.objective_corr(params, metrics_list, func_data_window),
               "decay_validity_score": 1 - masking.objective_da_sum(params, metrics_list, func_data_window),
               "interslice_dice_score": 1 - masking.objective_dice(params, metrics_list, func_data_window)}
     with open(os.path.join(args.outdir, "evaluation_scores.json"), "w") as f:
         json.dump(scores, f, indent=4)
     
-    if args.method == 'optim':
+    if 'optim' in args.method:
         print('Saving optimal parameters...')
         optimization_results = {"weights": weights.tolist(), "thresholds": thres.tolist()}
         with open(os.path.join(args.outdir, "optimal_params.json"), "w") as f:
@@ -105,8 +113,10 @@ def load_data(func_path, sbref_path, aseg_path, reg_path):
     aseg_nifti = nib.load(aseg_path)
     func_data = func_nifti.get_fdata()
     sbref_data = sbref_nifti.get_fdata()
-    if sbref_data.ndim > 3: # sometimes phase image is put in the 4th dimension
-        sbref_data = sbref_data[:, :, :, 0]
+    if sbref_data.ndim > 3: # use heuristic to skip the phase image (not ideal implemenation)
+        mean0 = sbref_data[:, :, :, 0].mean()
+        mean1 = sbref_data[:, :, :, 1].mean()
+        sbref_data = sbref_data[:, :, :, 0] if mean0 > mean1 else sbref_data[:, :, :, 1]
     aseg_data = aseg_nifti.get_fdata()
     regmat = np.loadtxt(reg_path, skiprows=4, max_rows=4) 
     affine = func_nifti.affine
@@ -210,8 +220,8 @@ def plot_windows(nslice, span, window_coords, centroids, aseg_windows, sbref_dat
     return fig_windows, axes
     
 
-def plot_metrics(nslice, metrics_list, weights, mask):
-    row_titles = ['Mean', 'SD', 'Skew', 'SBRef', 'Mean', 'Mask']
+def plot_metrics(nslice, metrics_list, weights, mask, metric_row_titles):
+    row_titles = metric_row_titles + ['mean', 'mask']
     fig_metric, axes = plt.subplots(nrows=len(row_titles), ncols=nslice, figsize=(6, 7))
     def plot_metric_on_row(metric, axes, row=0):
         for islice, ax in enumerate(axes[row, :]):
@@ -226,12 +236,10 @@ def plot_metrics(nslice, metrics_list, weights, mask):
         slice_data = mean_metric_unnorm[:, :, i]
         min_val, max_val = np.min(slice_data), np.max(slice_data)
         mean_metric[:, :, i] = (slice_data - min_val) / (max_val - min_val) if max_val > min_val else 0
-    plot_metric_on_row(metrics_list[0], axes, row=0)
-    plot_metric_on_row(metrics_list[1], axes, row=1)
-    plot_metric_on_row(metrics_list[2], axes, row=2)
-    plot_metric_on_row(metrics_list[3], axes, row=3)
-    plot_metric_on_row(mean_metric, axes, row=4)
-    plot_metric_on_row(mask, axes, row=5)
+    for i, m in enumerate(metrics_list):
+        plot_metric_on_row(m, axes, row=i)
+    plot_metric_on_row(mean_metric, axes, row=i+1)
+    plot_metric_on_row(mask, axes, row=i+2)
     plt.tight_layout()
     plt.subplots_adjust(hspace=0.3, wspace=0.05)
     return fig_metric, axes
