@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--aseg', type=str, help='path to freesurfer aseg')
     parser.add_argument('--reg', type=str, help='path to registration matrix)')
     parser.add_argument('--outdir', default='', type=str, help='path to output directory')
-    parser.add_argument('--span', default=5, type=int, help='length of window')
+    parser.add_argument('--span', default=7, type=int, help='length of window')
     parser.add_argument('--nslice', default=5, type=int, help='number of slices in window')
     parser.add_argument('--metrics', default=['amp', 'skew', 'decay', 'sbref'], nargs='+', type=str, help='metrics to use')
     parser.add_argument('--weights', default=4*[0.25], nargs='+', type=float, help='metric weights, only for method = simple')
@@ -47,19 +47,25 @@ def main():
     fig_windows, _ = plot_windows(args.nslice, args.span, window_coords, centroids, aseg_windows, sbref_data_window, sbref_data)
     fig_windows.savefig(os.path.join(figdir, 'windows.png'), format='png')
 
-    print("Computing metrics...")    
-    metrics_list = []
-    weights = []
-    for m, w in zip(args.metrics, args.weights):
-        if m == 'amp':
-            metrics_list.append(metrics.compute_std(func_data_window))
-        elif m == 'skew':
-            metrics_list.append(metrics.compute_skew(func_data_window))
-        elif m == 'decay':
-            metrics_list.append(metrics.compute_decay(func_data_window))
-        elif m == 'sbref':
-            metrics_list.append(metrics.compute_sbref(sbref_data_window))
-        weights.append(w)
+    print("Computing metrics...")  
+    
+    def get_metrics_and_weights(mlist, wlist):
+        metrics_list = []
+        weights = []
+        for m, w in zip(mlist, wlist):
+            if m == 'amp':
+                metrics_list.append(metrics.compute_std(func_data_window))
+            elif m == 'skew':
+                metrics_list.append(metrics.compute_skew(func_data_window))
+            elif m == 'decay':
+                metrics_list.append(metrics.compute_decay(func_data_window))
+            elif m == 'sbref':
+                metrics_list.append(metrics.compute_sbref(sbref_data_window))
+            weights.append(w)        
+        return metrics_list, weights
+    
+    
+    metrics_list, weights = get_metrics_and_weights(args.metrics, args.weights)
     
     print("Generating mask using method:", args.method)
     if args.method == 'simple':
@@ -95,6 +101,9 @@ def main():
         optimization_results = {"weights": weights.tolist(), "thresholds": thres.tolist()}
         with open(os.path.join(args.outdir, "optimal_params.json"), "w") as f:
             json.dump(optimization_results, f, indent=4)
+    
+    print("Saving mask window...")
+    np.save(os.path.join(args.outdir, 'mask_window'), mask)
     
     print("Generating full output mask...")
     full_mask = map_window_to_full(mask, window_coords, full_shape=func_data.shape[:3])
@@ -227,7 +236,7 @@ def plot_metrics(nslice, metrics_list, weights, mask, metric_row_titles):
         for islice, ax in enumerate(axes[row, :]):
             ax.imshow(metric[:, :, islice])
             ax.set_axis_off()
-        fig_metric.text(0.5, 1.0 - (row - 0.05) / len(row_titles), row_titles[row], ha='center', va='top', fontsize=14)
+        fig_metric.text(0.5, 1.0-row / len(row_titles), row_titles[row], ha='center', va='top', fontsize=14)
     weights = np.array(weights, dtype=float).reshape(-1, 1, 1, 1)  # Reshape for broadcasting
     stacked_arrays = np.stack(metrics_list, axis=0)
     mean_metric_unnorm = np.sum(stacked_arrays * weights, axis=0)
