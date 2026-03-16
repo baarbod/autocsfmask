@@ -31,15 +31,18 @@ def objective_mixed(params, metrics_list, func_voxels, precomputed_full_corr):
     weights = utils.softmax(params[:n_metrics])
     thres = params[n_metrics:]
     mask = utils.get_mask(metrics_list, weights, thres=thres)
+    
+    # --- penalty for empty or near-empty slices ---
+    empty_penalty = 0
+    for islice in range(len(func_voxels)):
+        # Require at least 3 voxels per slice
+        if np.sum(mask[islice] > 0) < 3:
+            empty_penalty += 100  # Massive penalty to ruin this solution's score
+            
     corr_scores = compute_corrscore(mask, func_voxels, precomputed_full_corr)
     corr_cost = 1 - np.mean(corr_scores)
-    s = utils.get_signal(func_voxels, mask)
-    sproc = utils.scale_data(s)
-    da = utils.compute_deattenuation_matrix(sproc)
-    upper_mask = np.triu(np.ones(da.shape[1:], dtype=bool), k=1)
-    da_scores = (da[:, upper_mask] > 0).mean(axis=1)
-    da_cost = 1 - np.mean(da_scores)
-    return 0.5 * corr_cost + 0.5 * da_cost
+    
+    return corr_cost + empty_penalty
     
 def get_mask_optim(metrics, func_voxels):
     n_metrics = len(metrics)
@@ -49,7 +52,7 @@ def get_mask_optim(metrics, func_voxels):
         c = np.corrcoef(slice_data)
         indices = np.triu_indices(c.shape[0], k=1)
         precomputed_full_corr.append(c[indices].mean())
-    bounds = [(-1, 1)] * n_metrics + [(0.1, 0.9)] * nslice
+    bounds = [(-1, 1)] * n_metrics + [(0.0, 3.0)] * nslice
     result = differential_evolution(
         objective_mixed, 
         bounds,
