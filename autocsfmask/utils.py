@@ -1,12 +1,8 @@
-# -*- coding: utf-8 -*-
-
 import numpy as np
-
 
 def softmax(x):
     e_x = np.exp(x - np.max(x))  # for numerical stability
     return e_x / e_x.sum()
-
 
 def dice_score(mask1, mask2):
     intersection = np.logical_and(mask1, mask2).sum()
@@ -15,7 +11,6 @@ def dice_score(mask1, mask2):
     if size1 + size2 == 0:
         return 1.0  # Treat two empty masks as perfectly overlapping
     return 2.0 * intersection / (size1 + size2)
-
 
 def smooth_timeseries(data, window_size=5):
         """
@@ -44,34 +39,24 @@ def smooth_timeseries(data, window_size=5):
         else:
             raise ValueError("Input must be a 1D or 2D array")
 
-
 def compute_deattenuation_matrix(s):
-    # s: shape (ntime, nslice)
-    # Result: da of shape (ntime, nslice, nslice), where da[t, i, j] = s[t, i] - s[t, j]
     return s[:, :, np.newaxis] - s[:, np.newaxis, :]
 
-
-def get_mask(metrics, weights, thres=0.5):
-    
+def get_mask(metrics, weights, thres=1.0):
     mean_metric_voxels = []
     nslice = len(metrics[0])
+    weights = np.array(weights)
+
     for islice in range(nslice):
         slice_metrics = [metrics[i][islice] for i in range(len(metrics))]
         stacked = np.stack(slice_metrics, axis=0)
-        weights = np.array(weights)
         mean_data = np.average(stacked, axis=0, weights=weights)
-        min_val, max_val = np.min(mean_data), np.max(mean_data)
-        data_norm = (mean_data - min_val) / (max_val - min_val) if max_val > min_val else 0
-        mean_metric_voxels.append(data_norm)
-        
+        mean_metric_voxels.append(mean_data)
     if np.isscalar(thres) or len(thres) == 1:
         mask = [(mean_metric_voxels[i] > thres).astype(np.uint8) for i in range(nslice)]
     else:
-        if len(thres) != nslice:
-            raise ValueError(f"Length of threshold vector ({thres.shape[2]}) must match number of slices ({nslice})")
         mask = [(mean_metric_voxels[i] > thres[i]).astype(np.uint8) for i in range(nslice)]
     return mask
-
 
 def get_signal(func_voxels, mask):
     nslice = len(func_voxels)
@@ -89,19 +74,17 @@ def get_signal(func_voxels, mask):
             s[:, i] = 0  # or np.nan if you prefer
     return s
 
+def mean_pct_portion(x, pct, fromtop=False):
+    x_sorted = np.sort(x)
+    if fromtop:
+        x_sorted = x_sorted[::-1]
+    n = max(1, round(len(x_sorted) * pct / 100))
+    return np.mean(x_sorted[:n])
 
-def scale_data(s, bottom_pct=2.5, top_pct=2.5, divide_by_top=True):
-    def mean_pct_portion(x, pct, fromtop=False):
-        x_sorted = np.sort(x)
-        if fromtop:
-            x_sorted = x_sorted[::-1]
-        n = max(1, round(len(x_sorted) * pct / 100))
-        return np.mean(x_sorted[:n])
+def scale_data(s, bottom_pct=2.5):
     s_copy = s.copy()
     for ch in range(s_copy.shape[1]):
         baseline = mean_pct_portion(s_copy[:, ch], bottom_pct)
         s_copy[:, ch] -= baseline
-    if divide_by_top:
-        top_val = mean_pct_portion(s_copy[:, 0], top_pct, fromtop=True)
-        s_copy /= top_val
+        s_copy[:, ch] /= baseline
     return s_copy
