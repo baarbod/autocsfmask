@@ -5,8 +5,10 @@ import argparse
 import sys
 import numpy as np
 import nibabel as nib
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.ndimage import center_of_mass
+from scipy import signal
 import autocsfmask.utils as utils
 import autocsfmask.metrics as metrics
 import autocsfmask.masking as masking
@@ -28,7 +30,7 @@ def main():
     parser.add_argument('--sbref', required=True, type=str, help='Path to sbref')
     parser.add_argument('--synthseg', required=True, type=str, help='Path to synthseg dilated mask')
     parser.add_argument('--outdir', default='outputs', type=str, help='Output directory')
-    parser.add_argument('--metrics', default=['amp2', 'sbref'], nargs='+', type=str, help='Metrics to use')
+    parser.add_argument('--metrics', default=['sbref'], nargs='+', type=str, help='Metrics to use')
     args = parser.parse_args()
     
     run_automask(
@@ -237,15 +239,19 @@ def plot_mask_overlay(func_vol, sbref_vol, mask_vol, synthseg_mask, pad=10,
     plt.tight_layout()
     return fig, axes
 
-def plot_signal(s, initial_trim=20, smoothing=25):
-    import pandas as pd
-    plt.style.use('seaborn-v0_8-muted') 
+def plot_signal(s, initial_trim=20, smoothing=25, ref_val_mean=1):
+    
+    def scale_data(s, pct=2.5):
+        raw_mean = np.mean(s, axis=0)
+        detrended = signal.detrend(s, axis=0)
+        return detrended / raw_mean
+
     splot = s[initial_trim:, :]
-    scaled = utils.scale_data(splot)
+    scaled = scale_data(splot)
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
     fig.suptitle(f"CSF Signal Extraction Analysis (Trimmed: {initial_trim} vols)", 
                  fontsize=16, fontweight='bold', y=1.05)
-    titles = ["Raw Signal", "Min-Max Scaled", f"Smoothed (Win={smoothing})"]
+    titles = ["Raw Signal", "Normalized", f"Smoothed (Win={smoothing})"]
     data_to_plot = [splot, scaled]
     scaled_smoothed = pd.DataFrame(scaled).rolling(smoothing, min_periods=1, center=True).mean().values
     data_to_plot.append(scaled_smoothed)
