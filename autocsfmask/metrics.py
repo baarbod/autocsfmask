@@ -1,16 +1,12 @@
-# -*- coding: utf-8 -*-
-
 import numpy as np
 from scipy.stats import skew
 
-
-def normalize_slicewise(voxel_list, lower_percentile=2, upper_percentile=98):
+def normalize_slicewise(voxel_list):
     for i, slice_data in enumerate(voxel_list):
-        p_low = np.percentile(slice_data, lower_percentile)
-        p_high = np.percentile(slice_data, upper_percentile)
-        voxel_list[i] = (slice_data - p_low)/p_high
+        mean = np.mean(slice_data)
+        std = np.std(slice_data)
+        voxel_list[i] = (slice_data - mean) / (std + 1e-8)
     return voxel_list
-
 
 def compute_std(voxel_list):
     voxel_stds = []
@@ -18,13 +14,11 @@ def compute_std(voxel_list):
         voxel_stds.append(slice_data.std(axis=-1)) 
     return normalize_slicewise(voxel_stds)
 
-
 def compute_mean(voxel_list):
     voxel_means = []
     for i, slice_data in enumerate(voxel_list):
         voxel_means.append(slice_data.mean(axis=-1)) 
     return normalize_slicewise(voxel_means)
-
 
 def compute_bottom_mean(voxel_list, frac=0.05):
     voxel_means = []
@@ -37,13 +31,11 @@ def compute_bottom_mean(voxel_list, frac=0.05):
         voxel_means.append(bottom_mean)
     return normalize_slicewise(voxel_means)
 
-
 def compute_skew(voxel_list):
     voxel_skews = []
     for i, slice_data in enumerate(voxel_list):
         voxel_skews.append(np.abs(skew(slice_data, axis=-1)))
     return normalize_slicewise(voxel_skews)    
-
 
 def compute_sbref(voxel_list):
     return normalize_slicewise(voxel_list)
