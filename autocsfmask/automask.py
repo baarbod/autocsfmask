@@ -28,7 +28,7 @@ def main():
     parser = argparse.ArgumentParser(description='Automatic 4th ventricle CSF flow segmentation')
     parser.add_argument('--func', required=True, type=str, help='Path to functional data')
     parser.add_argument('--sbref', required=True, type=str, help='Path to sbref')
-    parser.add_argument('--synthseg', required=True, type=str, help='Path to synthseg dilated mask')
+    parser.add_argument('--boundmask', required=True, type=str, help='Path to mask which covers the flow compartment')
     parser.add_argument('--outdir', default='outputs', type=str, help='Output directory')
     parser.add_argument('--metrics', default=['sbref'], nargs='+', type=str, help='Metrics to use')
     args = parser.parse_args()
@@ -36,18 +36,18 @@ def main():
     run_automask(
         func=args.func, 
         sbref=args.sbref, 
-        synthseg=args.synthseg, 
+        boundmask=args.boundmask, 
         outdir=args.outdir, 
         metrics_list_names=args.metrics
     )
 
-def run_automask(func, sbref, synthseg, outdir, metrics_list_names=['sd', 'sbref']):
+def run_automask(func, sbref, boundmask, outdir, metrics_list_names=['sd', 'sbref']):
     os.makedirs(outdir, exist_ok=True)
     setup_logging(outdir)
 
-    logging.info("Loading synthseg-masked data...")
+    logging.info("Loading data...")
     func_voxels, sbref_voxels, coords, func_affine, func_header, func_data, sbref_data = load_data(
-        func, sbref, synthseg
+        func, sbref, boundmask
     )
 
     logging.info("Computing metrics: %s", metrics_list_names)
@@ -68,9 +68,9 @@ def run_automask(func, sbref, synthseg, outdir, metrics_list_names=['sd', 'sbref
 
     # --- Plotting Metrics & Optimization ---
     logging.info("Saving metric optimization plots...")
-    synthseg_mask = np.load(synthseg)
+    boundmask_arr = np.load(boundmask)
     fig_metrics, _ = plot_metrics(
-        nslice=synthseg_mask.shape[2], 
+        nslice=boundmask_arr.shape[2], 
         metrics_list=metric_volumes, 
         weights=weights, 
         mask=mask_vol, 
@@ -79,7 +79,7 @@ def run_automask(func, sbref, synthseg, outdir, metrics_list_names=['sd', 'sbref
     fig_metrics.savefig(os.path.join(outdir, "metrics.png"))
 
     # Plot overlay
-    fig_overlay, _ = plot_mask_overlay(func_data, sbref_data, mask_vol, synthseg_mask)
+    fig_overlay, _ = plot_mask_overlay(func_data, sbref_data, mask_vol, boundmask_arr)
     fig_overlay.savefig(os.path.join(outdir, "mask_overlay.png"))
 
     # Extract signal and plot
@@ -203,14 +203,14 @@ def crop_to_mask(sbref_vol, mask_vol, pad=10):
     mask_crop  = mask_vol[x0:x1, y0:y1, :nz]
     return sbref_crop, mask_crop, (x0, x1, y0, y1)
 
-def plot_mask_overlay(func_vol, sbref_vol, mask_vol, synthseg_mask, pad=10,
+def plot_mask_overlay(func_vol, sbref_vol, mask_vol, boundmask_arr, pad=10,
                       cmap_sbref='gray', cmap_func='gray',
                       cmap_mask='Reds', cmap_synthseg='Blues',
                       alpha=0.4):
     func_vol_mn = func_vol.mean(axis=-1)
     sbref_crop, mask_crop, bounds = crop_to_mask(sbref_vol, mask_vol, pad=pad)
     func_crop, _, _ = crop_to_mask(func_vol_mn, mask_vol, pad=pad)
-    synthseg_crop, _, _ = crop_to_mask(synthseg_mask, mask_vol, pad=pad)
+    synthseg_crop, _, _ = crop_to_mask(boundmask_arr, mask_vol, pad=pad)
     print(f"func_crop shape: {func_crop.shape}")
     print(f"sbref_crop shape: {sbref_crop.shape}")
     print(f"mask_crop shape: {mask_crop.shape}")
@@ -230,7 +230,7 @@ def plot_mask_overlay(func_vol, sbref_vol, mask_vol, synthseg_mask, pad=10,
         axes[1, i].imshow(mask_crop[:, :, i], cmap=cmap_mask, alpha=alpha)
         axes[1, i].set_title(f"Slice {i} (Mean Func + Mask)")
         axes[1, i].axis("off")
-        # Row 2: sbref + synthseg + mask overlay
+        # Row 2: sbref + boundmask + mask overlay
         axes[2, i].imshow(sbref_crop[:, :, i], cmap=cmap_sbref)
         axes[2, i].imshow(synthseg_crop[:, :, i], cmap=cmap_synthseg, alpha=alpha)
         axes[2, i].imshow(mask_crop[:, :, i], cmap=cmap_mask, alpha=alpha*0.7)
