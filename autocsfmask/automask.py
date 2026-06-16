@@ -46,7 +46,7 @@ def run_automask(func, sbref, boundmask, outdir, metrics_list_names=['sd', 'sbre
     setup_logging(outdir)
 
     logging.info("Loading data...")
-    func_voxels, sbref_voxels, coords, func_affine, func_header, func_data, sbref_data = load_data(
+    func_voxels, sbref_voxels, coords, func_affine, func_header, func_mean, sbref_data, func_shape = load_data(
         func, sbref, boundmask
     )
 
@@ -56,17 +56,15 @@ def run_automask(func, sbref, boundmask, outdir, metrics_list_names=['sd', 'sbre
     logging.info("Generating mask using optimization")
     mask, weights, thres, best_score = generate_mask(metrics_list, func_voxels)
     
-    # Convert mask list to full volume
-    mask_vol = voxel_list_to_volume(mask, coords, func_data.shape[:3])
+    mask_vol = voxel_list_to_volume(mask, coords, func_shape[:3])
 
-    print(f"func shape: {func_data.shape}")
+    print(f"func shape: {func_shape}")
     print(f"sbref shape: {sbref_data.shape}")
     print(f"mask shape: {mask_vol.shape}")
 
-    # Reconstruct metric volumes for the plot_metrics function
-    metric_volumes = [voxel_list_to_volume(m, coords, func_data.shape[:3]) for m in metrics_list]
+    metric_volumes = [voxel_list_to_volume(m, coords, func_shape[:3]) for m in metrics_list]
 
-    # --- Plotting Metrics & Optimization ---
+# --- Plotting Metrics & Optimization ---
     logging.info("Saving metric optimization plots...")
     boundmask_arr = np.load(boundmask)
     fig_metrics, _ = plot_metrics(
@@ -77,10 +75,12 @@ def run_automask(func, sbref, boundmask, outdir, metrics_list_names=['sd', 'sbre
         metric_row_titles=metrics_list_names
     )
     fig_metrics.savefig(os.path.join(outdir, "metrics.png"))
+    plt.close(fig_metrics)  
 
-    # Plot overlay
-    fig_overlay, _ = plot_mask_overlay(func_data, sbref_data, mask_vol, boundmask_arr)
+    # Plot overlay 
+    fig_overlay, _ = plot_mask_overlay(func_mean, sbref_data, mask_vol, boundmask_arr)
     fig_overlay.savefig(os.path.join(outdir, "mask_overlay.png"))
+    plt.close(fig_overlay)  
 
     # Extract signal and plot
     logging.info("Extracting signal from mask...")
@@ -88,6 +88,7 @@ def run_automask(func, sbref, boundmask, outdir, metrics_list_names=['sd', 'sbre
     np.savetxt(os.path.join(outdir, "signal.txt"), s)
     fig_signal, _ = plot_signal(s)
     fig_signal.savefig(os.path.join(outdir, "signal.png"))
+    plt.close(fig_signal)
 
     # Save mask volume
     mask_path = os.path.join(outdir, "mask.nii.gz")
@@ -138,11 +139,11 @@ def load_data(func_path, sbref_path, synthseg_path):
 
     func_nifti = nib.load(func_path)
     sbref_nifti = nib.load(sbref_path)
-    func_data = func_nifti.get_fdata()
-    sbref_data = sbref_nifti.get_fdata()
+    
+    func_data = func_nifti.get_fdata(dtype=np.float32)
+    sbref_data = sbref_nifti.get_fdata(dtype=np.float32)
     synthseg_data = np.load(synthseg_path)
 
-    # Heuristic to skip phase images if necessary
     if sbref_data.ndim > 3:
         sbref_data = sbref_data[:, :, :, 0] if sbref_data[:, :, :, 0].mean() > sbref_data[:, :, :, 1].mean() else sbref_data[:, :, :, 1]
 
@@ -155,7 +156,11 @@ def load_data(func_path, sbref_path, synthseg_path):
         sbref_voxels.append(sbref_data[:, :, islice][slice_mask])
         voxel_coords.append(coords)
 
-    return func_voxels, sbref_voxels, voxel_coords, func_nifti.affine, func_nifti.header, func_data, sbref_data
+    func_shape = func_data.shape
+    func_mean = func_data.mean(axis=-1)
+    del func_data  # Force garbage collection of the massive 4D array
+
+    return func_voxels, sbref_voxels, voxel_coords, func_nifti.affine, func_nifti.header, func_mean, sbref_data, func_shape
 
 def plot_metrics(nslice, metrics_list, weights, mask, metric_row_titles, pad=10):
     _, _, (x0, x1, y0, y1) = crop_to_mask(mask, mask, pad=pad)
@@ -203,13 +208,12 @@ def crop_to_mask(sbref_vol, mask_vol, pad=10):
     mask_crop  = mask_vol[x0:x1, y0:y1, :nz]
     return sbref_crop, mask_crop, (x0, x1, y0, y1)
 
-def plot_mask_overlay(func_vol, sbref_vol, mask_vol, boundmask_arr, pad=10,
+def plot_mask_overlay(func_mean, sbref_vol, mask_vol, boundmask_arr, pad=10,
                       cmap_sbref='gray', cmap_func='gray',
                       cmap_mask='Reds', cmap_synthseg='Blues',
                       alpha=0.4):
-    func_vol_mn = func_vol.mean(axis=-1)
     sbref_crop, mask_crop, bounds = crop_to_mask(sbref_vol, mask_vol, pad=pad)
-    func_crop, _, _ = crop_to_mask(func_vol_mn, mask_vol, pad=pad)
+    func_crop, _, _ = crop_to_mask(func_mean, mask_vol, pad=pad)
     synthseg_crop, _, _ = crop_to_mask(boundmask_arr, mask_vol, pad=pad)
     print(f"func_crop shape: {func_crop.shape}")
     print(f"sbref_crop shape: {sbref_crop.shape}")
